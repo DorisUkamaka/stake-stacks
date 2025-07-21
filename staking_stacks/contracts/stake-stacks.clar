@@ -66,3 +66,44 @@
     reward-multiplier: u150, ;; 1.5x rewards
     lock-duration: u4032, ;; ~4 weeks in blocks
 })
+
+;; Private Functions
+(define-private (is-admin (user principal))
+    (or
+        (is-eq user CONTRACT_OWNER)
+        (default-to false (map-get? admin-roles user))
+    )
+)
+
+(define-private (calculate-rewards (staker principal))
+    (let (
+            (staker-data (unwrap! (map-get? stakers staker) u0))
+            (blocks-staked (- stacks-block-height (get last-claim-block staker-data)))
+            (stake-amount (get amount staker-data))
+            (tier (get-staking-tier stake-amount))
+            (multiplier (get reward-multiplier (unwrap! (map-get? staking-tiers tier) u100)))
+        )
+        (/ (* (* stake-amount (var-get reward-rate)) multiplier blocks-staked)
+            u10000000
+        )
+    )
+)
+
+(define-private (get-staking-tier (amount uint))
+    (if (>= amount u50000000)
+        u3
+        (if (>= amount u10000000)
+            u2
+            u1
+        )
+    )
+)
+
+(define-private (update-staker-claim-block (staker principal))
+    (match (map-get? stakers staker)
+        staker-data (map-set stakers staker
+            (merge staker-data { last-claim-block: stacks-block-height })
+        )
+        false
+    )
+)
