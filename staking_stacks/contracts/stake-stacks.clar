@@ -230,3 +230,103 @@
         })
     )
 )
+
+;; Admin Functions
+
+;; Add funds to reward pool
+(define-public (fund-reward-pool (amount uint))
+    (begin
+        (asserts! (is-admin tx-sender) ERR_NOT_AUTHORIZED)
+        (try! (stx-transfer? amount tx-sender (as-contract tx-sender)))
+        (var-set reward-pool (+ (var-get reward-pool) amount))
+        (ok amount)
+    )
+)
+
+;; Update reward rate (admin only)
+(define-public (set-reward-rate (new-rate uint))
+    (begin
+        (asserts! (is-admin tx-sender) ERR_NOT_AUTHORIZED)
+        (var-set reward-rate new-rate)
+        (ok new-rate)
+    )
+)
+
+;; Update minimum stake (admin only)
+(define-public (set-minimum-stake (new-minimum uint))
+    (begin
+        (asserts! (is-admin tx-sender) ERR_NOT_AUTHORIZED)
+        (var-set minimum-stake new-minimum)
+        (ok new-minimum)
+    )
+)
+
+;; Add admin role
+(define-public (add-admin (new-admin principal))
+    (begin
+        (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_NOT_AUTHORIZED)
+        (map-set admin-roles new-admin true)
+        (ok true)
+    )
+)
+
+;; Remove admin role
+(define-public (remove-admin (admin principal))
+    (begin
+        (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_NOT_AUTHORIZED)
+        (map-delete admin-roles admin)
+        (ok true)
+    )
+)
+
+;; Pause/unpause contract
+(define-public (toggle-pause)
+    (begin
+        (asserts! (is-admin tx-sender) ERR_NOT_AUTHORIZED)
+        (var-set contract-paused (not (var-get contract-paused)))
+        (ok (var-get contract-paused))
+    )
+)
+
+;; Read-only Functions
+
+;; Get staker information
+(define-read-only (get-staker-info (staker principal))
+    (map-get? stakers staker)
+)
+
+;; Get pending rewards for a staker
+(define-read-only (get-pending-rewards (staker principal))
+    (calculate-rewards staker)
+)
+
+;; Get contract statistics
+(define-read-only (get-contract-stats)
+    {
+        total-staked: (var-get total-staked),
+        total-rewards-distributed: (var-get total-rewards-distributed),
+        reward-rate: (var-get reward-rate),
+        minimum-stake: (var-get minimum-stake),
+        reward-pool: (var-get reward-pool),
+        contract-paused: (var-get contract-paused),
+    }
+)
+
+;; Get staking tier information
+(define-read-only (get-tier-info (tier uint))
+    (map-get? staking-tiers tier)
+)
+
+;; Check if user is admin
+(define-read-only (is-user-admin (user principal))
+    (is-admin user)
+)
+
+;; Get all available tiers
+(define-read-only (get-all-tiers)
+    {
+        tier-1: (unwrap-panic (map-get? staking-tiers u1)),
+        tier-2: (unwrap-panic (map-get? staking-tiers u2)),
+        tier-3: (unwrap-panic (map-get? staking-tiers u3)),
+    }
+)
