@@ -107,3 +107,126 @@
         false
     )
 )
+
+;; Public Functions
+
+;; Stake STX tokens
+(define-public (stake
+        (amount uint)
+        (duration uint)
+    )
+    (let (
+            (staker tx-sender)
+            (tier (get-staking-tier amount))
+            (tier-data (unwrap! (map-get? staking-tiers tier) ERR_INVALID_AMOUNT))
+            (required-duration (get lock-duration tier-data))
+        )
+        (asserts! (not (var-get contract-paused)) ERR_CONTRACT_PAUSED)
+        (asserts! (>= amount (var-get minimum-stake)) ERR_MINIMUM_STAKE_NOT_MET)
+        (asserts! (>= duration required-duration) ERR_INVALID_DURATION)
+        (asserts! (is-none (map-get? stakers staker)) ERR_ALREADY_STAKED)
+        ;; Transfer STX from staker to contract
+        (try! (stx-transfer? amount staker (as-contract tx-sender)))
+        ;; Record staker information
+        (map-set stakers staker {
+            amount: amount,
+            start-block: stacks-block-height,
+            last-claim-block: stacks-block-height,
+            lock-duration: duration,
+            total-earned: u0,
+        })
+        ;; Update total staked
+        (var-set total-staked (+ (var-get total-staked) amount))
+        (ok amount)
+    )
+)
+
+;; Unstake STX tokens
+(define-public (unstake)
+    (let (
+            (staker tx-sender)
+            (staker-data (unwrap! (map-get? stakers staker) ERR_NOT_STAKED))
+            (stake-amount (get amount staker-data))
+            (lock-end-block (+ (get start-block staker-data) (get lock-duration staker-data)))
+            (pending-rewards (calculate-rewards staker))
+        )
+        (asserts! (not (var-get contract-paused)) ERR_CONTRACT_PAUSED)
+        (asserts! (>= stacks-block-height lock-end-block)
+            ERR_LOCK_PERIOD_NOT_EXPIRED
+        )
+        ;; Claim any pending rewards first
+        (if (> pending-rewards u0)
+            (begin
+                (try! (as-contract (stx-transfer? pending-rewards tx-sender staker)))
+                (var-set total-rewards-distributed
+                    (+ (var-get total-rewards-distributed) pending-rewards)
+                )
+                (var-set reward-pool (- (var-get reward-pool) pending-rewards))
+            )
+            true
+        )
+        ;; Transfer staked amount back to staker
+        (try! (as-contract (stx-transfer? stake-amount tx-sender staker)))
+        ;; Update total staked
+        (var-set total-staked (- (var-get total-staked) stake-amount))
+        ;; Remove staker from map
+        (map-delete stakers staker)
+        (ok {
+            staked-amount: stake-amount,
+            rewards-claimed: pending-rewards,
+        })
+    )
+)
+
+;; Claim rewards without unstaking
+(define-public (claim-rewards)
+    (let (
+            (staker tx-sender)
+            (staker-data (unwrap! (map-get? stakers staker) ERR_NOT_STAKED))
+            (rewards (calculate-rewards staker))
+        )
+        (asserts! (not (var-get contract-paused)) ERR_CONTRACT_PAUSED)
+        (asserts! (> rewards u0) ERR_REWARDS_NOT_AVAILABLE)
+        (asserts! (>= (var-get reward-pool) rewards) ERR_INSUFFICIENT_BALANCE)
+        ;; Transfer rewards to staker
+        (try! (as-contract (stx-transfer? rewards tx-sender staker)))
+        ;; Update staker's total earned and last claim block
+        (map-set stakers staker
+            (merge staker-data {
+                last-claim-block: stacks-block-height,
+                total-earned: (+ (get total-earned staker-data) rewards),
+            })
+        )
+        ;; Update global counters
+        (var-set total-rewards-distributed
+            (+ (var-get total-rewards-distributed) rewards)
+        )
+        (var-set reward-pool (- (var-get reward-pool) rewards))
+        (ok rewards)
+    )
+)
+
+;; Emergency unstake with penalty (only in case of emergency)
+(define-public (emergency-unstake)
+    (let (
+            (staker tx-sender)
+            (staker-data (unwrap! (map-get? stakers staker) ERR_NOT_STAKED))
+            (stake-amount (get amount staker-data))
+            (penalty (/ stake-amount u10)) ;; 10% penalty
+            (return-amount (- stake-amount penalty))
+        )
+        (asserts! (not (var-get contract-paused)) ERR_CONTRACT_PAUSED)
+        ;; Transfer reduced amount back to staker
+        (try! (as-contract (stx-transfer? return-amount tx-sender staker)))
+        ;; Add penalty to reward pool
+        (var-set reward-pool (+ (var-get reward-pool) penalty))
+        ;; Update total staked
+        (var-set total-staked (- (var-get total-staked) stake-amount))
+        ;; Remove staker from map
+        (map-delete stakers staker)
+        (ok {
+            returned-amount: return-amount,
+            penalty-amount: penalty,
+        })
+    )
+)
