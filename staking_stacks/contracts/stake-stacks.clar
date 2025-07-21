@@ -21,3 +21,48 @@
 (define-data-var minimum-stake uint u1000000) ;; 1 STX minimum stake
 (define-data-var contract-paused bool false)
 (define-data-var reward-pool uint u0)
+
+;; Data Maps
+(define-map stakers
+    principal
+    {
+        amount: uint,
+        start-block: uint,
+        last-claim-block: uint,
+        lock-duration: uint,
+        total-earned: uint,
+    }
+)
+
+(define-map staking-tiers
+    uint
+    {
+        min-amount: uint,
+        reward-multiplier: uint,
+        lock-duration: uint,
+    }
+)
+
+(define-map admin-roles
+    principal
+    bool
+)
+
+;; Initialize staking tiers
+(map-set staking-tiers u1 {
+    min-amount: u1000000, ;; 1 STX
+    reward-multiplier: u100, ;; 1x rewards
+    lock-duration: u1008, ;; ~1 week in blocks
+})
+
+(map-set staking-tiers u2 {
+    min-amount: u10000000, ;; 10 STX
+    reward-multiplier: u120, ;; 1.2x rewards
+    lock-duration: u2016, ;; ~2 weeks in blocks
+})
+
+(map-set staking-tiers u3 {
+    min-amount: u50000000, ;; 50 STX
+    reward-multiplier: u150, ;; 1.5x rewards
+    lock-duration: u4032, ;; ~4 weeks in blocks
+})
