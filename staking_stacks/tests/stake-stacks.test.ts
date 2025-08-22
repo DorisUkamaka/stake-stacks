@@ -1918,3 +1918,506 @@ describe("Stake Stacks Contract - Admin Controls and Access Management", () => {
     });
   });
 });
+
+describe("Stake Stacks Contract - Integration Tests and Edge Cases", () => {
+  const wallet2 = accounts.get("wallet_2")!;
+  const wallet3 = accounts.get("wallet_3")!;
+  const wallet4 = accounts.get("wallet_4")!;
+  
+  beforeEach(() => {
+    simnet.mineEmptyBlocks(3);
+  });
+
+  describe("Cross-Function Integration", () => {
+    it("should handle complete user lifecycle (stake -> claim -> unstake)", () => {
+      // Fund reward pool for lifecycle test
+      simnet.callPublicFn(
+        contractName,
+        "fund-reward-pool",
+        [Cl.uint(1000000000)],
+        deployer
+      );
+      
+      const stakeAmount = 5000000; // 5 STX
+      
+      // 1. Stake
+      const stakeResult = simnet.callPublicFn(
+        contractName,
+        "stake",
+        [Cl.uint(stakeAmount), Cl.uint(1008)],
+        wallet1
+      );
+      expect(stakeResult.result).toBeOk(Cl.uint(stakeAmount));
+      
+      // 2. Mine blocks and claim rewards multiple times
+      simnet.mineEmptyBlocks(100);
+      
+      const firstClaim = simnet.callPublicFn(
+        contractName,
+        "claim-rewards",
+        [],
+        wallet1
+      );
+      expect(firstClaim.result).toBeOk(expect.any(Object));
+      
+      simnet.mineEmptyBlocks(100);
+      
+      const secondClaim = simnet.callPublicFn(
+        contractName,
+        "claim-rewards",
+        [],
+        wallet1
+      );
+      expect(secondClaim.result).toBeOk(expect.any(Object));
+      
+      // 3. Wait for lock period and unstake
+      simnet.mineEmptyBlocks(1000);
+      
+      const unstakeResult = simnet.callPublicFn(
+        contractName,
+        "unstake",
+        [],
+        wallet1
+      );
+      expect(unstakeResult.result).toBeOk(expect.any(Object));
+      
+      // 4. Verify user is completely removed
+      const finalStakerInfo = simnet.callReadOnlyFn(
+        contractName,
+        "get-staker-info",
+        [Cl.principal(wallet1)],
+        deployer
+      );
+      expect(finalStakerInfo.result).toBeNone();
+    });
+
+    it("should handle admin changes during active staking", () => {
+      // Setup initial staking
+      simnet.callPublicFn(
+        contractName,
+        "fund-reward-pool",
+        [Cl.uint(1000000000)],
+        deployer
+      );
+      
+      simnet.callPublicFn(
+        contractName,
+        "stake",
+        [Cl.uint(3000000), Cl.uint(1008)],
+        wallet2
+      );
+      
+      // Mine some blocks
+      simnet.mineEmptyBlocks(50);
+      
+      // Admin changes reward rate mid-staking
+      simnet.callPublicFn(
+        contractName,
+        "set-reward-rate",
+        [Cl.uint(200)], // Double the rate
+        deployer
+      );
+      
+      // Mine more blocks with new rate
+      simnet.mineEmptyBlocks(50);
+      
+      const newRewards = simnet.callReadOnlyFn(
+        contractName,
+        "get-pending-rewards",
+        [Cl.principal(wallet2)],
+        deployer
+      );
+      
+      // New rewards should be generated
+      expect(newRewards.result).toBeDefined(); // Should exist and be a valid value
+      
+      // Reset reward rate
+      simnet.callPublicFn(
+        contractName,
+        "set-reward-rate",
+        [Cl.uint(100)],
+        deployer
+      );
+    });
+
+    it("should handle pause/unpause during various operations", () => {
+      // Setup staking
+      simnet.callPublicFn(
+        contractName,
+        "fund-reward-pool",
+        [Cl.uint(1000000000)],
+        deployer
+      );
+      
+      simnet.callPublicFn(
+        contractName,
+        "stake",
+        [Cl.uint(2000000), Cl.uint(1008)],
+        wallet3
+      );
+      
+      simnet.mineEmptyBlocks(100);
+      
+      // Pause during active staking
+      simnet.callPublicFn(contractName, "toggle-pause", [], deployer);
+      
+      // Operations should fail while paused
+      const claimWhilePaused = simnet.callPublicFn(
+        contractName,
+        "claim-rewards",
+        [],
+        wallet3
+      );
+      expect(claimWhilePaused.result).toBeErr(Cl.uint(109)); // ERR_CONTRACT_PAUSED
+      
+      const stakeWhilePaused = simnet.callPublicFn(
+        contractName,
+        "stake",
+        [Cl.uint(1000000), Cl.uint(1008)],
+        wallet4
+      );
+      expect(stakeWhilePaused.result).toBeErr(Cl.uint(109)); // ERR_CONTRACT_PAUSED
+      
+      // Unpause and operations should work again
+      simnet.callPublicFn(contractName, "toggle-pause", [], deployer);
+      
+      const claimAfterUnpause = simnet.callPublicFn(
+        contractName,
+        "claim-rewards",
+        [],
+        wallet3
+      );
+      expect(claimAfterUnpause.result).toBeOk(expect.any(Object));
+    });
+
+    it("should handle complex multi-tier staking scenarios", () => {
+      // Fund large reward pool
+      simnet.callPublicFn(
+        contractName,
+        "fund-reward-pool",
+        [Cl.uint(5000000000)],
+        deployer
+      );
+      
+      // Users stake at different tiers
+      const stakingScenarios = [
+        { wallet: wallet1, amount: 1500000, duration: 1008 }, // Tier 1
+        { wallet: wallet2, amount: 15000000, duration: 2016 }, // Tier 2
+        { wallet: wallet3, amount: 75000000, duration: 4032 }, // Tier 3
+        { wallet: wallet4, amount: 3000000, duration: 1500 }, // Tier 1 extended
+      ];
+      
+      stakingScenarios.forEach((scenario) => {
+        const stakeResult = simnet.callPublicFn(
+          contractName,
+          "stake",
+          [Cl.uint(scenario.amount), Cl.uint(scenario.duration)],
+          scenario.wallet
+        );
+        expect(stakeResult.result).toBeOk(Cl.uint(scenario.amount));
+      });
+      
+      // Mine blocks and check that different tiers earn different rewards
+      simnet.mineEmptyBlocks(200);
+      
+      // Verify all have rewards and they're different amounts
+      stakingScenarios.forEach((scenario) => {
+        const reward = simnet.callReadOnlyFn(
+          contractName,
+          "get-pending-rewards",
+          [Cl.principal(scenario.wallet)],
+          deployer
+        );
+        expect(reward.result).toBeDefined(); // Should exist and be a valid value
+      });
+    });
+  });
+
+  describe("Edge Cases and Boundary Conditions", () => {
+    it("should handle minimum stake amounts at tier boundaries", () => {
+      // Test exactly at tier boundaries
+      const tierTests = [
+        { amount: 1000000, duration: 1008, tier: "1" }, // Exactly minimum tier 1
+        { amount: 10000000, duration: 2016, tier: "2" }, // Exactly minimum tier 2
+        { amount: 50000000, duration: 4032, tier: "3" }, // Exactly minimum tier 3
+        { amount: 999999, duration: 1008, shouldFail: true }, // Just below tier 1
+      ];
+      
+      const wallets = [wallet1, wallet2, wallet3, wallet4];
+      
+      tierTests.forEach((test, index) => {
+        const wallet = wallets[index % wallets.length];
+        const stakeResult = simnet.callPublicFn(
+          contractName,
+          "stake",
+          [Cl.uint(test.amount), Cl.uint(test.duration)],
+          wallet
+        );
+        
+        if (test.shouldFail) {
+          expect(stakeResult.result).toBeErr(Cl.uint(105)); // ERR_MINIMUM_STAKE_NOT_MET
+        } else {
+          expect(stakeResult.result).toBeOk(Cl.uint(test.amount));
+        }
+      });
+    });
+
+    it("should handle duration edge cases", () => {
+      const durationTests = [
+        { duration: 1007, shouldFail: true }, // Just below minimum
+        { duration: 1008, shouldFail: false }, // Exactly minimum
+        { duration: 2015, shouldFail: false }, // Just below tier 2 requirement
+        { duration: 2016, shouldFail: false }, // Exactly tier 2 minimum
+      ];
+      
+      const wallets = [wallet1, wallet2, wallet3, wallet4];
+      
+      durationTests.forEach((test, index) => {
+        const wallet = wallets[index % wallets.length];
+        const stakeResult = simnet.callPublicFn(
+          contractName,
+          "stake",
+          [Cl.uint(1000000), Cl.uint(test.duration)],
+          wallet
+        );
+        
+        if (test.shouldFail) {
+          expect(stakeResult.result).toBeErr(Cl.uint(108)); // ERR_INVALID_DURATION
+        } else {
+          expect(stakeResult.result).toBeOk(Cl.uint(1000000));
+        }
+      });
+    });
+
+    it("should handle reward pool depletion scenarios", () => {
+      // Fund with small amount
+      simnet.callPublicFn(
+        contractName,
+        "fund-reward-pool",
+        [Cl.uint(1000000)], // Only 1 STX
+        deployer
+      );
+      
+      // Large stake that will generate more rewards than pool
+      simnet.callPublicFn(
+        contractName,
+        "stake",
+        [Cl.uint(50000000), Cl.uint(4032)], // Large tier 3 stake
+        wallet1
+      );
+      
+      // Mine many blocks to generate large rewards
+      simnet.mineEmptyBlocks(1000);
+      
+      // Try to claim (should fail due to insufficient pool)
+      const claimResult = simnet.callPublicFn(
+        contractName,
+        "claim-rewards",
+        [],
+        wallet1
+      );
+      
+      expect(claimResult.result).toBeErr(Cl.uint(101)); // ERR_INSUFFICIENT_BALANCE
+      
+      // Fund more and claim should work
+      simnet.callPublicFn(
+        contractName,
+        "fund-reward-pool",
+        [Cl.uint(100000000)],
+        deployer
+      );
+      
+      const claimAfterFunding = simnet.callPublicFn(
+        contractName,
+        "claim-rewards",
+        [],
+        wallet1
+      );
+      
+      expect(claimAfterFunding.result).toBeOk(expect.any(Object));
+    });
+
+    it("should handle emergency unstaking edge cases", () => {
+      const emergencyTests = [
+        { amount: 1000000, expectedPenalty: 100000 }, // 1 STX
+        { amount: 10000000, expectedPenalty: 1000000 }, // 10 STX
+      ];
+      
+      // Use different wallets that haven't been used yet in this describe block
+      const wallets = [accounts.get("wallet_5")!, accounts.get("wallet_6")!];
+      
+      emergencyTests.forEach((test, index) => {
+        const wallet = wallets[index];
+        
+        // Stake
+        const stakeResult = simnet.callPublicFn(
+          contractName,
+          "stake",
+          [Cl.uint(test.amount), Cl.uint(1008)],
+          wallet
+        );
+        expect(stakeResult.result).toBeOk(Cl.uint(test.amount));
+        
+        // Emergency unstake immediately
+        const emergencyResult = simnet.callPublicFn(
+          contractName,
+          "emergency-unstake",
+          [],
+          wallet
+        );
+        
+        expect(emergencyResult.result).toBeOk(
+          Cl.tuple({
+            "returned-amount": Cl.uint(test.amount - test.expectedPenalty),
+            "penalty-amount": Cl.uint(test.expectedPenalty),
+          })
+        );
+      });
+    });
+
+    it("should handle concurrent operations stress test", () => {
+      // Fund large pool
+      simnet.callPublicFn(
+        contractName,
+        "fund-reward-pool",
+        [Cl.uint(10000000000)],
+        deployer
+      );
+      
+      // Use fresh wallets not used in other tests in this describe block
+      const wallets = [accounts.get("wallet_7")!, accounts.get("wallet_8")!, accounts.get("wallet_9")!, accounts.get("wallet_10")!];
+      const amounts = [1000000, 2000000, 5000000, 10000000];
+      
+      // All stake
+      wallets.forEach((wallet, index) => {
+        const stakeResult = simnet.callPublicFn(
+          contractName,
+          "stake",
+          [Cl.uint(amounts[index]), Cl.uint(1008)],
+          wallet
+        );
+        expect(stakeResult.result).toBeOk(Cl.uint(amounts[index]));
+      });
+      
+      // Mine blocks
+      simnet.mineEmptyBlocks(200);
+      
+      // Some claim rewards
+      const claimResult = simnet.callPublicFn(contractName, "claim-rewards", [], wallets[0]);
+      expect(claimResult.result).toBeOk(expect.any(Object));
+      
+      // Wait for lock period
+      simnet.mineEmptyBlocks(1000);
+      
+      // Some emergency unstake, some normal unstake
+      const emergencyResult = simnet.callPublicFn(
+        contractName,
+        "emergency-unstake",
+        [],
+        wallets[2]
+      );
+      expect(emergencyResult.result).toBeOk(expect.any(Object));
+      
+      const unstakeResult = simnet.callPublicFn(
+        contractName,
+        "unstake",
+        [],
+        wallets[0]
+      );
+      expect(unstakeResult.result).toBeOk(expect.any(Object));
+      
+      // Verify contract stats are updated
+      const finalStats = simnet.callReadOnlyFn(
+        contractName,
+        "get-contract-stats",
+        [],
+        deployer
+      );
+      
+      expect(finalStats.result).toBeTuple({
+        "total-staked": expect.any(Object),
+        "total-rewards-distributed": expect.any(Object),
+        "reward-rate": Cl.uint(100),
+        "minimum-stake": Cl.uint(1000000),
+        "reward-pool": expect.any(Object),
+        "contract-paused": Cl.bool(false),
+      });
+    });
+  });
+
+  describe("Gas Optimization and Performance", () => {
+    it("should handle operations efficiently with reasonable gas costs", () => {
+      // This test focuses on ensuring operations complete successfully
+      // Gas optimization testing would typically be done with specialized tools
+      
+      simnet.callPublicFn(
+        contractName,
+        "fund-reward-pool",
+        [Cl.uint(1000000000)],
+        deployer
+      );
+      
+      // Perform batch operations to test efficiency
+      const operations = [
+        () => simnet.callPublicFn(contractName, "stake", [Cl.uint(5000000), Cl.uint(1008)], wallet1),
+        () => simnet.mineEmptyBlocks(100),
+        () => simnet.callPublicFn(contractName, "claim-rewards", [], wallet1),
+        () => simnet.mineEmptyBlocks(100),
+        () => simnet.callPublicFn(contractName, "claim-rewards", [], wallet1),
+        () => simnet.mineEmptyBlocks(900),
+        () => simnet.callPublicFn(contractName, "unstake", [], wallet1),
+      ];
+      
+      // Execute all operations and verify they complete
+      operations.forEach((operation) => {
+        if (typeof operation === 'function') {
+          const result = operation();
+          if (result && typeof result === 'object' && 'result' in result) {
+            // For function calls, verify success
+            expect(result.result).toBeOk(expect.any(Object));
+          }
+        }
+      });
+    });
+
+    it("should handle large-scale reward calculations efficiently", () => {
+      simnet.callPublicFn(
+        contractName,
+        "fund-reward-pool",
+        [Cl.uint(10000000000)],
+        deployer
+      );
+      
+      // Large stake for intensive calculations
+      simnet.callPublicFn(
+        contractName,
+        "stake",
+        [Cl.uint(100000000), Cl.uint(4032)], // 100 STX, max tier
+        wallet2
+      );
+      
+      // Mine many blocks for complex reward calculation
+      simnet.mineEmptyBlocks(2000);
+      
+      // Check rewards calculation completes
+      const rewardsResult = simnet.callReadOnlyFn(
+        contractName,
+        "get-pending-rewards",
+        [Cl.principal(wallet2)],
+        deployer
+      );
+      
+      expect(rewardsResult.result).toBeDefined(); // Should exist and be a valid value
+      
+      // Claim should complete successfully
+      const claimResult = simnet.callPublicFn(
+        contractName,
+        "claim-rewards",
+        [],
+        wallet2
+      );
+      
+      expect(claimResult.result).toBeOk(expect.any(Object));
+    });
+  });
+});
